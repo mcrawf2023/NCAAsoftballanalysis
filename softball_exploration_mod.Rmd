@@ -1,0 +1,1128 @@
+---
+title: "NCAA Softball 2023 Season Analysis"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Data From: 
+https://github.com/sportsdataverse/softballR
+
+```{r}
+devtools::install_github("tmking2002/softballR")
+```
+
+```{r}
+devtools::install_github("AppliedDataSciencePartners/xgboostExplainer")
+```
+
+
+##Environment Setup
+###Load and install necessary packages
+
+```{r}
+library(usethis)
+library(scales)
+library(ggplot2)
+library(ggimage)
+library(tibble)
+library(pillar)
+library(dplyr)
+library(ggdark) # Load ggdark
+library(reshape) # Load reshape
+library(ggridges) # Load ggridges
+library(ggrepel) # Load ggrepel
+library(tidyverse)
+library(GGally)
+library (pls)
+library(fastDummies)
+library(forecast)
+library(zoo)
+library(lubridate)
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering visualization
+library(dendextend) # for comparing two dendrograms
+library(tidyr) # Load tidyr
+library(sparcl) # Sparse Clustering
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+#install.packages("SHAPforxgboost")
+library(SHAPforxgboost) # Load shap for XGBoost
+library(OptimalCutpoints) # Load optimal cutpoints
+```
+
+
+```{r}
+options(scipen = 999)
+```
+
+###Load and Preview the Data
+
+```{r}
+hitting <- softballR::load_ncaa_softball_playerbox(season = 2023, category = "Hitting")
+
+pitching <- softballR::load_ncaa_softball_playerbox(season = 2023, category = "Pitching")
+
+scoreboard <- softballR::load_ncaa_softball_scoreboard(season = 2023)
+```
+
+```{r}
+logos <- load("team_logos.rda")
+```
+
+```{r}
+head(pitching)
+head(hitting)
+```
+
+```{r}
+dim(hitting)
+dim(pitching)
+sum(is.na(hitting))
+sum(is.na(pitching))
+colnames(hitting)
+colnames(pitching)
+nd_hitting <- hitting[hitting$team == "Notre Dame", ]
+nd_pitching <- pitching[pitching$team == "Notre Dame", ]
+unique(nd_hitting$player)
+unique(nd_pitching$player)
+```
+
+Adding a column into hitting dataset that counts the number of singles that a batter hit in a game and the number of plate appearances that they had in a game
+
+```{r}
+hitting$x1b <- hitting$h - hitting$x2b - hitting$x3b - hitting$hr
+hitting$pa <- hitting$ab + hitting$bb + hitting$hbp + hitting$sf
+hitting = hitting[,c(1,2,3,33,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+           21,22,23,24,25,26,27,28,29,30,31,32)]
+head(hitting)
+```
+
+Creating a loop that iterates through each unique player in the dataset and aggregates their hits and at bats over the course of the season in order to calculate a single statistic for each player's season batting average
+
+```{r}
+name = unique(hitting$player)
+name
+
+total_avg_DF = data.frame()
+
+for(i in name){
+    subData = hitting[hitting$player==i, ]
+    hit_count = sum(subData$h)
+    ab_count = sum(subData$ab)
+    avg = round(hit_count/ab_count, 3)
+  
+    total_avg_DF = rbind(total_avg_DF, c(i, hit_count, ab_count, avg))
+}
+
+colnames(total_avg_DF)[1] ="Name"
+colnames(total_avg_DF)[2] ="Total_Hits"
+colnames(total_avg_DF)[3] ="Total_AB"
+colnames(total_avg_DF)[4] ="Season_Batting_Average"
+
+head(total_avg_DF)
+```
+
+Exploration of Season Batting Average Statistic
+
+```{r}
+mean(total_avg_DF$Season_Batting_Average)
+summary(total_avg_DF$Season_Batting_Average)
+which.max(total_avg_DF$Season_Batting_Average)
+highest_avg <- total_avg_DF[1082,]
+highest_avg$Name
+```
+
+```{r}
+total_avg_DF <- total_avg_DF %>% mutate_at(c("Total_Hits", "Total_AB", "Season_Batting_Average"), as.numeric)
+
+total_avg_DF = total_avg_DF[total_avg_DF$Total_AB > 20, ]
+
+hist(total_avg_DF$Season_Batting_Average, main = '2023 Batting Average Distribution', xlab = 'Batting Average', ylab = 'Count of Players')
+```
+
+This graph shows the batting average distribution of all of the players in Division 1 softball in 2023. The the mean batting average is .250 and the graph shows that the data is normally distributed. There are outliers on both ends with some players not getting a hit and Sydney McKinney from Witchita State having the highest batting average of the 2023 season with a .520 average. There are more outliers batting above .400 than I would have thought, so it might be interesting to look at these players further to see if there is any correlation between their statistics that might account for their higher batting average. 
+
+
+Creating a loop that iterates through each unique team in the NCAA and aggregates the total number of RBI's and home runs players on that team hit over the course of the season. These numbers are divided by the total number of games that team played in a season to calculate the proportion of RBI's per game and home runs per game for each team during the season
+
+```{r}
+team = unique(hitting$team)
+team
+
+rbi_game = data.frame()
+
+for(i in team)
+  {
+    subData = hitting[hitting$team==i, ]
+    rbi_count = sum(subData$rbi)
+    hr_count = sum(subData$hr)
+    game_count = sum(subData$g)
+    rbi_per_game = rbi_count/game_count
+    hr_per_game = hr_count/game_count
+    
+    
+    
+    rbi_game = rbind(rbi_game, c(i, rbi_count, game_count, rbi_per_game, hr_per_game))
+}
+
+colnames(rbi_game)[1] ="Team"
+colnames(rbi_game)[2] ="RBI Count"
+colnames(rbi_game)[3] ="Number of Games"
+colnames(rbi_game)[4] ="RBI_Per_Game"
+colnames(rbi_game)[5] ="Home_Run_Per_Game"
+
+rbi_game <- rbi_game %>% mutate_at(c("RBI Count", "Number of Games", "RBI_Per_Game", "Home_Run_Per_Game"), as.numeric)
+
+rbi_game$RBI_Per_Game <- round(rbi_game$RBI_Per_Game ,digit=2)
+rbi_game$Home_Run_Per_Game <- round(rbi_game$Home_Run_Per_Game ,digit=2)
+
+head(rbi_game)
+```
+
+```{r}
+temp <- merge(rbi_game, team_logos, by.x = "Team", by.y = "school")
+```
+
+
+```{r} 
+ggplot(data = temp, # Set dataset
+                 aes(x = RBI_Per_Game, # Set x-axis variable
+                     y = Home_Run_Per_Game)) + # Set y-axis variable
+  geom_point() + # Set geom point to create scatter plot
+  geom_image(image = temp$logos, asp = 16/9) + # Add logos
+  dark_theme_bw() + # Set dark theme
+  geom_hline(yintercept = mean(rbi_game$Home_Run_Per_Game)) + # Add line for average pass yards
+  geom_vline(xintercept = mean(rbi_game$RBI_Per_Game)) + # Add line for average rush yards
+   labs(x = "RBI Per Game", # Add labels
+       y = "Home Runs Per Game",
+       title = "RBI vs Home Runs Per Game",
+       subtitle = "NCAA Softball 2023") 
+invert_geom_defaults()
+```
+
+This graph shows the RBI per game plotted against the home runs per game for each team. Comparing teams at similar points on the X-axis (RBI per game), the ones that are lower on the Y-axis such as Stanford and Appalacian State do not hit as many home runs and they rely on more stringing together of singles, doubles, triples, and sacrifices to score runs as opposed to NC State and Charlotte that rely more heavily on hitting home runs for a larger proprtion of their scoring. Teams in the upper right quadrant including Tennessee, Georgia, and Arizona had the strongest offenses in 2023 as they had the highest average of RBI per game, and they relied on power at differing levels to bring in those runs. Notre Dame is in a fairly strong spot on this graph but could improve upon the statistic on either axis to elevate their offense. 
+
+
+```{r}
+ggcorr(hitting[,4:12])
+```
+
+This is a graph of the correlation between different hitting variables for all of the batters in D1 softball. One interesting observation is in the row with the hits. As would be expected, there is the strongest correlation between hits and singles (x1b) as singles have the lowest base value and are the easiest to get. However, the correlation between doubles (x2b) and hits and home runs and hits looks to be very similar, which is a suprising observation to me because I would have thought that there would be a much stronger correlation between doubles and home runs because it is theoretically easier to hit a double because of the shorter distance. It would be interesting to further analyze this to see if there has been an increase in power leading to higher frequency of home runs or if something is causing hits that would have previously been doubles to leave the yard more often. 
+
+
+This is a loop that iterates through each record in the hitting dataset and aggregates each unique player's statistics such as number of hits, number of walks, number of times caught stealing, number of stolen bases, and more over the course of the season. Then, these season totals for each player are used to calculate more advanced statistics, often referred to as sabermetrics. The fields that were calculated for each player include on-base percentage, slugging percentage, OPS (on-base percentage + slugging), isolated power, runs created, weighted on base average, strikeout rate, and walk rate 
+
+```{r, is_it_me}
+#have to make numerics at some point yikes
+name = unique(hitting$player)
+name
+
+player_RC = data.frame()
+
+for(i in name){
+    subData = hitting[hitting$player==i, ]
+    team = unique(na.omit(subData$team))
+    hit_count = sum(subData$h, na.rm = T)
+    bb_count = sum(subData$bb)
+    cs_count = sum(subData$cs)
+    tb_count = sum(subData$tb)
+    sb_count = sum(subData$sb)
+    ab_count = sum(subData$ab)
+    hbp_count = sum(subData$hbp)
+    pa_count = sum(subData$pa)
+    singles = sum(subData$x1b)
+    doubles = sum(subData$x2b)
+    triples = sum(subData$x3b)
+    hr_count = sum(subData$hr)
+    ibb_count = sum(subData$ibb)
+    sf_count = sum(subData$sf)
+    strikeouts = sum(subData$k)
+    runs = sum(subData$r)
+    RC = round((hit_count + bb_count - cs_count) * (tb_count + (0.55 *  sb_count))/(ab_count + bb_count), 3)
+    OBP = round((hit_count + bb_count + hbp_count)/(pa_count), 3)
+    SLG = round(tb_count/ab_count, 3)
+    ISO = round((doubles + (2*triples) + (3 * hr_count))/ab_count, 3)
+    wOBA = round((0.690*bb_count + 0.722*hbp_count + 0.888*singles + 1.271*doubles + 1.616*triples + 2.101*hr_count) / (ab_count + bb_count - ibb_count + sf_count + hbp_count),3)
+    SOR = round(strikeouts/pa_count, 3)
+    BBR = round(bb_count/pa_count, 3)
+    OPS = OBP + SLG
+    
+    player_RC = rbind(player_RC, c(i, team, hit_count, bb_count, cs_count, tb_count, sb_count, ab_count, hbp_count, pa_count, singles, doubles, triples, hr_count, ibb_count, sf_count, strikeouts, runs, RC, OBP, SLG, ISO, wOBA, SOR, BBR, OPS))
+    
+}
+
+colnames(player_RC)[1] ="Name"
+colnames(player_RC)[2] = "Team"
+colnames(player_RC)[3] ="Hit_Count"
+colnames(player_RC)[4] ="Walks"
+colnames(player_RC)[5] ="Caught_Stealing"
+colnames(player_RC)[6] ="Total_Bases"
+colnames(player_RC)[7] ="Stolen_Bases"
+colnames(player_RC)[8] ="Number_of_AB"
+colnames(player_RC)[9] = "HBP"
+colnames(player_RC)[10] = "Plate_Appearances"
+colnames(player_RC)[11] = "Singles"
+colnames(player_RC)[12] ="Doubles"
+colnames(player_RC)[13] ="Triples"
+colnames(player_RC)[14] ="Home_Runs"
+colnames(player_RC)[15] ="Intentional_Walks"
+colnames(player_RC)[16] ="Sacrifice_Flies"
+colnames(player_RC)[17] ="Strikeouts"
+colnames(player_RC)[18] = "Runs"
+colnames(player_RC)[19] ="Runs_Created"
+colnames(player_RC)[20] ="On_Base_Percentage"
+colnames(player_RC)[21] ="Slugging_Percentage"
+colnames(player_RC)[22] ="Isolated_Power"
+colnames(player_RC)[23] ="Weighted_OBA"
+colnames(player_RC)[24] ="Strikeout_Rate"
+colnames(player_RC)[25] ="Walk_Rate"
+colnames(player_RC)[26] ="OPS"
+
+player_RC[, c(3:26)] <- sapply(player_RC[, c(3:26)], as.numeric)
+#player_RC <- player_RC %>% mutate_at(c("Hit_Count", "Walks", "Caught_Stealing", "Total_Bases", "Stolen_Bases", "Number_of_AB", "HBP", "Plate_Appearances", "Singles", "Doubles", "Triples", "Home_Runs", "Intentional_Walks", "Sacrifice_Flies", "Strikeouts", "Runs_Created", "On_Base_Percentage", "Slugging_Percentage", "Isolated_Power", "Weighted_OBA", "Strikeout_Rate", "Walk_Rate", "OPS"), as.numeric)
+
+head(player_RC)
+```
+
+Omit records that contain null values
+
+```{r}
+player_RC <- na.omit(player_RC)
+colSums(is.na(player_RC))
+```
+
+Filter dataset to include only players who had greater than 30 at-bats during the season to eliminate skewed statistics from players who had a much smaller sample size of at-bats
+
+```{r}
+player_RC <- player_RC[player_RC$Number_of_AB > 30, ]
+```
+
+```{r}
+summary(player_RC$Runs)
+```
+
+Data Exploration of Advanced Statistics Calculated in Loop with an emphasis on the runs created statistic
+
+Top 20 Players in Runs Created
+
+```{r}
+head(player_RC[order(player_RC$Runs_Created, decreasing = TRUE),], n = 20)
+```
+
+Distribution of Runs Created
+
+```{r}
+par(mfcol = c(1, 2))
+hist(player_RC$Runs_Created, main = '2023 Runs Created Distribution', xlab = 'Runs Created', ylab = 'Count of Players')
+hist(player_RC$Slugging_Percentage, main = '2023 Slugging Percentage Distribution', xlab = 'Slugging Percentage', ylab = 'Count of Players')
+```
+
+wOBA vs Runs Created Plot
+```{r}
+g_7 <- ggplot(player_RC, # Set dataset as batters
+              aes(x = Weighted_OBA, # Set x-axis as wOBA
+                  y = Runs_Created,)) + # Set y-axis as Runs created
+              
+  geom_point(alpha = 0.5) + # Set geom point for scatter
+   theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid
+  labs(x = "wOBA", y = "Runs Created", # Set labels
+       title = "wOBA v Runs Created for Batters in NCAA Softball",
+       subtitle = "MLB Batters 2023") +
+  geom_smooth() # Add smoothing line
+# Generate plot
+g_7
+```
+
+Runs vs OPS Plot
+```{r}
+g_8 <- ggplot(player_RC, # Set dataset as batters
+              aes(x = Runs, # Set x-axis as wOBA
+                  y = OPS,)) + # Set y-axis as Runs created
+              
+  geom_point(alpha = 0.5) + # Set geom point for scatter
+   theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid
+  labs(x = "Runs", y = "OPS", # Set labels
+       title = "Runs Vs OPS") +
+  geom_smooth() # Add smoothing line
+# Generate plot
+g_8
+```
+
+Calculate same statistics as above but looping through and aggregating them at the team level over the course of the season rather than at the individual level
+```{r}
+team = unique(hitting$team)
+team
+
+team_stats = data.frame()
+
+for(i in team){
+    subData = hitting[hitting$team==i, ]
+    hit_count = sum(subData$h, na.rm = T)
+    bb_count = sum(subData$bb)
+    cs_count = sum(subData$cs)
+    tb_count = sum(subData$tb)
+    sb_count = sum(subData$sb)
+    ab_count = sum(subData$ab)
+    hbp_count = sum(subData$hbp)
+    pa_count = sum(subData$pa)
+    singles = sum(subData$x1b)
+    doubles = sum(subData$x2b)
+    triples = sum(subData$x3b)
+    hr_count = sum(subData$hr)
+    ibb_count = sum(subData$ibb)
+    sf_count = sum(subData$sf)
+    sb_count = sum(subData$sb)
+    strikeouts = sum(subData$k)
+    runs = sum(subData$r)
+    RC = round((hit_count + bb_count - cs_count) * (tb_count + (0.55 *  sb_count))/(ab_count + bb_count), 3)
+    OBP = round((hit_count + bb_count + hbp_count)/(pa_count), 3)
+    SLG = round(tb_count/ab_count, 3)
+    ISO = round((doubles + (2*triples) + (3 * hr_count))/ab_count, 3)
+    wOBA = round((0.690*bb_count + 0.722*hbp_count + 0.888*singles + 1.271*doubles + 1.616*triples + 2.101*hr_count) / (ab_count + bb_count - ibb_count + sf_count + hbp_count),3)
+    SOR = round(strikeouts/pa_count, 3)
+    BBR = round(bb_count/pa_count, 3)
+    OPS = OBP + SLG
+    avg = round(hit_count/ab_count, 3)
+    
+    team_stats = rbind(team_stats, c(i, hit_count, bb_count, cs_count, tb_count, sb_count, ab_count, hbp_count, pa_count, singles, doubles, triples, hr_count, ibb_count, sf_count, sb_count, strikeouts, runs, RC, OBP, SLG, ISO, wOBA, SOR, BBR, OPS, avg))
+    
+}
+
+colnames(team_stats)[1] = "Team"
+colnames(team_stats)[2] ="Hit_Count"
+colnames(team_stats)[3] ="Walks"
+colnames(team_stats)[4] ="Caught_Stealing"
+colnames(team_stats)[5] ="Total_Bases"
+colnames(team_stats)[6] ="Stolen_Bases"
+colnames(team_stats)[7] ="Number_of_AB"
+colnames(team_stats)[8] = "HBP"
+colnames(team_stats)[9] = "Plate_Appearances"
+colnames(team_stats)[10] = "Singles"
+colnames(team_stats)[11] ="Doubles"
+colnames(team_stats)[12] ="Triples"
+colnames(team_stats)[13] ="Home_Runs"
+colnames(team_stats)[14] ="Intentional_Walks"
+colnames(team_stats)[15] ="Sacrifice_Flies"
+colnames(team_stats)[16] ="Sacrifice_Bunts"
+colnames(team_stats)[17] ="Strikeouts"
+colnames(team_stats)[18] = "Runs"
+colnames(team_stats)[19] ="Runs_Created"
+colnames(team_stats)[20] ="On_Base_Percentage"
+colnames(team_stats)[21] ="Slugging_Percentage"
+colnames(team_stats)[22] ="Isolated_Power"
+colnames(team_stats)[23] ="Weighted_OBA"
+colnames(team_stats)[24] ="Strikeout_Rate"
+colnames(team_stats)[25] ="Walk_Rate"
+colnames(team_stats)[26] ="OPS"
+colnames(team_stats)[27] = "Batting_Average"
+
+team_stats[, c(2:27)] <- sapply(team_stats[, c(2:27)], as.numeric)
+#player_RC <- player_RC %>% mutate_at(c("Hit_Count", "Walks", "Caught_Stealing", "Total_Bases", "Stolen_Bases", "Number_of_AB", "HBP", "Plate_Appearances", "Singles", "Doubles", "Triples", "Home_Runs", "Intentional_Walks", "Sacrifice_Flies", "Strikeouts", "Runs_Created", "On_Base_Percentage", "Slugging_Percentage", "Isolated_Power", "Weighted_OBA", "Strikeout_Rate", "Walk_Rate", "OPS"), as.numeric)
+
+head(team_stats) 
+```
+
+```{r}
+dim(team_stats)
+```
+
+##Linear Regression
+
+Investigate the response variable: I am using the dataset where statistics are summarized to a team level to fit a linear regression model with the number of runs for the team as the response variable 
+
+The mean is less than the median and they are very close in value, which indicates that there are likely not any signficant outliers in this dataset
+```{r}
+#mean is close to median --> prob no outliers
+summary(team_stats$Runs)
+```
+
+This distribution appears to be close to a normal distribution, so we do not need to log-transform it.
+```{r}
+g_1 <- ggplot(team_stats, aes(x = Runs)) + # Set X-axis as Runs
+  geom_density(fill = "blue", alpha = 0.3) + # Use geom_density to get density plot
+  theme_bw() + # Set theme for plot
+  theme(panel.grid.major = element_blank(), # Turn of the background grid
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  labs(x = "Runs", # Set plot labels
+       title = "Density plot of Runs")
+
+g_1 
+```
+```{r}
+colnames(team_stats)
+```
+
+Separating the team statistics dataset into training (60%) and validation (40%)
+```{r}
+RNGkind(sample.kind = "Rounding") #making sure set.seed() generate same values regardless which OS is used
+# use set.seed() to get the same partitions when re-running the R code.
+set.seed(10)
+
+## partitioning into training (60%) and validation (40%)
+# randomly sample 60% of the row IDs for training; the remaining 40% serve as validation
+train.rows <- sample(rownames(team_stats),dim(team_stats)[1]*0.6)
+head(train.rows)
+```
+
+```{r}
+train.data <- team_stats[train.rows, ]
+head(train.data)
+```
+
+```{r}
+valid.rows <- setdiff(rownames(team_stats), train.rows) #valid.rows = all rows - train.rows 
+valid.data <- team_stats[valid.rows, ]
+head(valid.data)
+```
+
+Performing backward elimination and forward selection in order to select variables for linear regression model
+
+```{r}
+lm.back <- step(fit_2, direction = 'backward')
+summary(lm.back)
+
+#this was the combination of variables with the lowest AIC; stop when by adding in predictors you inc AIC
+#Step:  AIC=1770.4
+# Runs ~ Hit_Count + Walks + Total_Bases + Stolen_Bases + Number_of_AB + 
+#     Intentional_Walks + Sacrifice_Flies + Strikeouts + Runs_Created + 
+#     On_Base_Percentage + Walk_Rate + Batting_Average
+```
+
+```{r}
+lm.backward.pred <- predict(fit_2, valid.data)
+accuracy(lm.backward.pred, valid.data$Runs)
+```
+
+```{r}
+lm.forward <- step(fit_2, direction = 'forward')
+summary(lm.forward)
+```
+
+```{r}
+lm.forward.pred <- predict(fit_2, valid.data)
+accuracy(lm.forward.pred, valid.data$Runs)
+```
+
+```{r}
+fit_3 <- lm(Runs ~ Hit_Count + Walks + Total_Bases + Stolen_Bases + Number_of_AB + Intentional_Walks + Sacrifice_Flies + Strikeouts + Runs_Created + On_Base_Percentage + Walk_Rate + Batting_Average, # Set formula 
+data = train.data)
+summary(fit_3)
+```
+
+```{r}
+summary(player_RC$Runs)
+```
+
+Create a new column in the player batting statistics dataset that indicates whether they were on a team that qualified for the 2023 Women's College Softball World Series (1) or not (0)
+
+```{r}
+
+player_RC['wcws_team'] <- ifelse((player_RC$Team == "Oklahoma") | (player_RC$Team == "Florida State") | (player_RC$Team == "Tennessee") | (player_RC$Team == "Alabama") | (player_RC$Team == "Oklahoma State") | (player_RC$Team == "Washington") | (player_RC$Team == "Stanford") | (player_RC$Team == "Utah"), 1, 0)
+
+sample_n(player_RC,10)
+```
+
+```{r}
+colnames(player_RC)
+```
+
+Summary Statistics Contrasting Offensive Statistics for Teams that Qualified for the WCWS versus ones who did not
+```{r}
+wcws_teams_1 <- player_RC[player_RC$wcws_team == 1, ]
+rest_teams <- player_RC[player_RC$wcws_team == 0, ]
+summary(wcws_teams_1)
+summary(rest_teams)
+```
+
+Box Plot of Distribution of Samples of Key Variables Identified by Linear Regression filtered by whether or not the team qualified for the World Series
+
+```{r}
+par(mfcol = c(1, 3)) #puts plots into one row, four columns, makes it so all 4 plots are next to each other on same screen 
+boxplot(player_RC$Walks ~ player_RC$wcws_team, xlab = "Team Category", ylab = "Walks")
+boxplot(player_RC$Runs_Created ~ player_RC$wcws_team, xlab = "Team Category", ylab = "Runs Created")
+boxplot(player_RC$Stolen_Bases ~ player_RC$wcws_team, xlab = "Team Category", ylab = "Stolen Bases")
+boxplot(player_RC$On_Base_Percentage ~ player_RC$wcws_team, xlab = "Team Category", ylab = "OBP")
+boxplot(player_RC$OPS ~ player_RC$wcws_team, xlab = "Team Category", ylab = "OPS")
+```
+
+Correlation Chart of Statistics for the players who had the top 10 number of runs created to see what factors separated the top tier players from the rest
+
+```{r}
+highest_rc <- top_n(player_RC, 10, Runs_Created)
+highest_rc <- (highest_rc[,-c(1,2)])
+heatmap(cor(highest_rc),symm = TRUE, Rowv = NA, Colv = NA)
+```
+Key takeaway: high correlation in the right hand corner between statistics relating to power (OPS, slugging percentaage, ISO) and getting on base (walks, OBP, and wOBA)
+
+###XGBoost
+
+Filtering data to use only numerical data in the XGBoost model
+```{r}
+vars_to_use <- names(team_stats[keep_rows,c(2:17, 20:27)])[names(team_stats[keep_rows,c(2:17, 20:27)]) %in% names(player_RC)]
+```
+
+```{r}
+library(xgboost)
+```
+
+Creating the training matrix
+```{r}
+# Create training matrix
+dtrain <- xgb.DMatrix(data = as.matrix(team_stats[keep_rows,vars_to_use]), # Set training data
+                      label = team_stats$Runs[keep_rows]) # Set response variable
+```
+
+Run initial XGBoost Model without Parameter Tuning and extract variable importance
+```{r}
+set.seed(111111)
+bst_1 <- xgboost(data = dtrain, # Set training data
+                 
+                 eta = 0.03, # Set learning rate
+                 max.depth = 5, # Set max depth
+                 min_child_weight = 15, # Set minimum number of samples in node to split
+                 gamma = 0.15, # Set minimum loss reduction for split
+                 subsample = 0.7, # Set proportion of training data to use in tree
+                 colsample_bytree =  0.7, # Set number of variables to use in each tree
+                 lambda = 0.75,
+                 alpha = 0.25,
+             
+                 
+                 nrounds = 100, # Set number of rounds
+                 
+                 verbose = 1, # 1 - Prints out fit
+                 print_every_n = 20) # Prints out result every 20th iteration
+```
+
+
+```{r}
+ # Extract importance
+imp_mat <- xgb.importance(model = bst_1)
+# Plot importance (top 10 variables)
+xgb.plot.importance(imp_mat, top_n = 15)
+```
+
+```{r}
+names(team_stats[keep_rows,c(2:17, 20:27)])
+```
+
+```{r}
+names(player_RC)
+```
+
+```{r}
+#vars_to_use <- names(team_stats[keep_rows,c(2:17, 20:27)])[names(team_stats[keep_rows,c(2:17, 20:27)]) %in% names(player_RC)]
+```
+```{r}
+names(team_stats[keep_rows,vars_to_use])
+```
+```{r}
+names(player_RC[, vars_to_use])
+```
+
+
+```{r}
+player_model <- player_RC[, vars_to_use]
+dim(player_model)
+```
+
+```{r}
+#question--if my response variable isnt in this new data frame can I use response variable from a different one?
+# Create training matrix
+dtrain2 <- xgb.DMatrix(data = as.matrix(player_RC[,vars_to_use]), # Set training data
+                      label = player_RC$Runs) # Set response variable
+```
+
+```{r}
+names(player_RC[, vars_to_use]) %in% names(team_stats[keep_rows,vars_to_use])
+```
+
+```{r}
+player_preds <- predict(bst_1, dtrain2)
+
+player_RC$predicted_runs <- player_preds
+```
+
+```{r}
+head(player_RC)
+```
+
+Create Training and Test Matrix
+```{r}
+dtrain2 <- xgb.DMatrix(data = as.matrix(train.data[, c(2:17,19:22)]), label = as.numeric(train.data$Runs) - 1)
+# Create test matrix
+dtest2 <- xgb.DMatrix(data = as.matrix(valid.data[, c(2:17, 19:22)]), label = as.numeric(valid.data$Runs) - 1)
+```
+
+```{r}
+set.seed(111111)
+bst_2 <- xgboost(data = dtrain2, # Set training data
+                 
+                 eta = 0.03, # Set learning rate
+                 max.depth = 5, # Set max depth
+                 min_child_weight = 15, # Set minimum number of samples in node to split
+                 gamma = 0.15, # Set minimum loss reduction for split
+                 subsample = 0.7, # Set proportion of training data to use in tree
+                 colsample_bytree =  0.7, # Set number of variables to use in each tree
+                 lambda = 0.75,
+                 alpha = 0.25,
+             
+                 
+                 nrounds = 100, # Set number of rounds
+                 
+                 verbose = 1, # 1 - Prints out fit
+                 print_every_n = 20) # Prints out result every 20th iteration
+```
+
+```{r}
+library(caret) # Load Caret
+library(OptimalCutpoints) # Load optimal cutpoints
+library(ggplot2) # Load ggplot2
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost)
+```
+
+
+```{r}
+boost_preds <- predict(bst_2, dtrain2) # Create predictions for xgboost model
+# Join predictions and actual
+pred_dat <- cbind.data.frame(boost_preds , train.data$Runs)
+names(pred_dat) <- c("predictions", "response")
+oc<- optimal.cutpoints(X = "predictions",  #takes response variable and predictions and picks best point to cut that off at
+                       status = "response",
+                       tag.healthy = 0,
+                       data = pred_dat,
+                       methods = "MaxEfficiency")
+
+boost_preds_1 <- predict(bst_2, dtest2) # Create predictions for xgboost model
+
+pred_dat <- cbind.data.frame(boost_preds_1 , valid.data$Runs)#
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_1))
+boost_pred_class[boost_preds_1 >= oc$MaxEfficiency$Global$optimal.cutoff$cutoff[1]] <- 1
+
+View(t)
+
+t <- table(boost_pred_class, valid.data$Runs) # Create table
+#confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+```{r}
+imp_mat <- xgb.importance(model = bst_2)
+# Plot importance (top 10 variables)
+xgb.plot.importance(imp_mat, top_n = 15)
+```
+
+##Parameter Tuning
+
+```{r}
+#tune max depth and child weight
+max_depth_vals <- c(3, 5, 7, 10, 15) # Create vector of max depth values
+min_child_weight <- c(1,3,5,7, 10, 15) # Create vector of min child values
+```
+
+```{r}
+cv_params <- expand.grid(max_depth_vals, min_child_weight)
+names(cv_params) <- c("max_depth", "min_child_weight")
+# Create results vector
+rmse_vec  <- rep(NA, nrow(cv_params)) 
+# Loop through results
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain2, #Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = cv_params$max_depth[i], # Set max depth
+                     min_child_weight = cv_params$min_child_weight[i], # Set minimum number of samples in node to split
+                     
+                     
+                     nrounds = 100, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+                     
+  ) # Set evaluation metric to use
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+}
+```
+
+```{r}
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$max_depth <- as.factor(res_db$max_depth) # Convert tree number to factor for plotting
+res_db$min_child_weight <- as.factor(res_db$min_child_weight) # Convert node size to factor for plotting
+# Print AUC heatmap
+g_2 <- ggplot(res_db, aes(y = max_depth, x = min_child_weight, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = "blue", # Choose low color
+                       mid = "white", # Choose mid color
+                       high = "red", # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Minimum Child Weight", y = "Max Depth", fill = "RMSE") # Set labels
+g_2 # Generate plot
+```
+Want the lowest RMSE; choosing min child weight of 1 and max depth of 3
+
+```{r}
+###### 2 - Gamma Tuning ######
+gamma_vals <- c(0, 0.05, 0.1, 0.15, 0.2) # Create vector of gamma values
+
+# Be Careful - This can take a very long time to run
+set.seed(111111)
+rmse_vec  <- rep(NA, length(gamma_vals))
+for(i in 1:length(gamma_vals)){
+  bst_tune <- xgb.cv(data = dtrain2, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = 3, # Set max depth
+                     min_child_weight = 1, # Set minimum number of samples in node to split
+                     gamma = gamma_vals[i], # Set minimum loss reduction for split
+                     
+                     
+                     
+                     nrounds = 100, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+}
+```
+
+```{r}
+cbind.data.frame(gamma_vals, rmse_vec)
+```
+
+Use gamma equal to 0.10 because has the lowest rmse val
+
+```{r}
+###### 3 - Subsample and Column sample Tuning ######
+
+# Be Careful - This can take a very long time to run
+subsample <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of subsample values
+colsample_by_tree <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of col sample values
+
+# Expand grid of tuning parameters
+cv_params <- expand.grid(subsample, colsample_by_tree)
+names(cv_params) <- c("subsample", "colsample_by_tree")
+# Create vectors to store results
+rmse_vec <- rep(NA, nrow(cv_params)) 
+# Loop through parameter values
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = 3, # Set max depth
+                     min_child_weight = 1, # Set minimum number of samples in node to split
+                     gamma = 0.10, # Set minimum loss reduction for split
+                     subsample = cv_params$subsample[i], # Set proportion of training data to use in tree
+                     colsample_bytree = cv_params$colsample_by_tree[i], # Set number of variables to use in each tree
+                     
+                     nrounds = 150, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+}
+```
+
+```{r}
+res_db2 <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db2)[3] <- c("rmse") 
+res_db2$subsample <- as.factor(res_db2$subsample) # Convert tree number to factor for plotting
+res_db2$colsample_by_tree <- as.factor(res_db2$colsample_by_tree) # Convert node size to factor for plotting
+g_10 <- ggplot(res_db2, aes(y = colsample_by_tree, x = subsample, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = "blue", # Choose low color
+                       mid = "white", # Choose mid color
+                       high = "red", # Choose high color
+                       midpoint =mean(res_db2$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Subsample", y = "Column Sample by Tree", fill = "RMSE") # Set labels
+g_10
+```
+Choosing subsample = 1 and column sample by tree = 1
+
+```{r}
+###### 4 - eta tuning ######
+
+# Use xgb.cv to run cross-validation inside xgboost
+set.seed(111111)
+bst_mod_1 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.3, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 1, # Set minimum number of samples in node to split
+                    gamma = 0.10, # Set minimum loss reduction for split
+                    subsample = 1, # Set proportion of training data to use in tree
+                    colsample_bytree =  1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+
+
+set.seed(111111)
+bst_mod_2 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.1, # Set learning rate
+                    max.depth =  3, # Set max depth
+                    min_child_weight = 15, # Set minimum number of samples in node to split
+                    gamma = 0.10, # Set minimum loss reduction for split
+                    subsample = 1 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+
+set.seed(111111)
+bst_mod_3 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.05, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 15 , # Set minimum number of samples in node to split
+                    gamma = 0.10, # Set minimum loss reduction for split
+                    subsample = 1 , # Set proportion of training data to use in tree
+                    colsample_bytree =  1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+
+
+set.seed(111111)
+bst_mod_4 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.01, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 15, # Set minimum number of samples in node to split
+                    gamma = 0.1, # Set minimum loss reduction for split
+                    subsample = 1 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+
+
+
+set.seed(111111)
+bst_mod_5 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.005, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 15, # Set minimum number of samples in node to split
+                    gamma = 0.10, # Set minimum loss reduction for split
+                    subsample = 1 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+                    
+) # Set evaluation metric to use
+```
+
+```{r}
+# eta plots
+
+# Extract results for model with eta = 0.3
+pd1 <- cbind.data.frame(bst_mod_1$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.3, nrow(bst_mod_1$evaluation_log)))
+names(pd1)[3] <- "eta"
+# Extract results for model with eta = 0.1
+pd2 <- cbind.data.frame(bst_mod_2$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.1, nrow(bst_mod_2$evaluation_log)))
+names(pd2)[3] <- "eta"
+# Extract results for model with eta = 0.05
+pd3 <- cbind.data.frame(bst_mod_3$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.05, nrow(bst_mod_3$evaluation_log)))
+names(pd3)[3] <- "eta"
+# Extract results for model with eta = 0.01
+pd4 <- cbind.data.frame(bst_mod_4$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.01, nrow(bst_mod_4$evaluation_log)))
+names(pd4)[3] <- "eta"
+# Extract results for model with eta = 0.005
+pd5 <- cbind.data.frame(bst_mod_5$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.005, nrow(bst_mod_5$evaluation_log)))
+names(pd5)[3] <- "eta"
+# Join datasets
+plot_data <- rbind.data.frame(pd1, pd2, pd3, pd4, pd5)
+# Converty ETA to factor
+plot_data$eta <- as.factor(plot_data$eta)
+# Plot points
+g_6 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_point(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_6
+
+# Plot lines
+g_7 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_smooth(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_7
+```
+
+Choose learning rate .01 and number of trees 250
+
+```{r}
+# fit final xgb model
+set.seed(111111)
+bst_final <- xgboost(data = dtrain, # Set training data
+                     
+                     
+                     
+                     eta = 0.01, # Set learning rate
+                     max.depth =  3, # Set max depth
+                     min_child_weight = 1, # Set minimum number of samples in node to split
+                     gamma = 0.10, # Set minimum loss reduction for split
+                     subsample =  1, # Set proportion of training data to use in tree
+                     colsample_bytree = 1, # Set number of variables to use in each tree
+                     
+                     nrounds = 250, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+                     
+)
+```
+
+```{r}
+imp_mat <- xgb.importance(model = bst_final)
+# Plot importance (top 10 variables)
+xgb.plot.importance(imp_mat, top_n = 10)
+```
+
+```{r}
+(bst_final)
+```
+
+Predicting the number of runs for each team
+```{r}
+player_preds <- predict(bst_final, dtrain)
+
+team_stats$predicted_runs <- player_preds
+head(team_stats)
+View(team_stats)
+```
+
+Calculating the residuals
+```{r}
+rf_plot_data <- data.frame(Predicted=team_stats$predicted_runs, Actual=team_stats$Runs)
+rf_plot <- ggplot(rf_plot_data, 
+       aes(x=Predicted, y=Actual)) + ylim(0,350) +
+  geom_point() +
+  geom_abline(intercept=0, slope=1, color='blue') +
+  theme_bw() + # Set theme for plot
+  theme(panel.grid.major = element_blank(), # Turn of the background grid
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank())
+
+rf_plot
+```
+
+Calculating the accuracy of the model
+```{r}
+library(forecast)
+
+# use accuracy() to compute common accuracy measures.
+accuracy(team_stats$predicted_runs, team_stats$Runs)
+```
+
+Assigning the predicted runs back to the original player dataframe and filtering with Notre Dame as the team so that we can predict the number of runs for each player
+
+```{r}
+notre_dame <- player_RC[player_RC$Team == "Notre Dame", ]
+head(notre_dame,10)
+tail(notre_dame)
+```
+
+```{r}
+head(player_RC[order(player_RC$Runs_Created, decreasing = TRUE),], n = 20)
+```
+
+```{r}
+hist(notre_dame$Walk_Rate)
+```
+
+```{r}
+median(notre_dame$predicted_runs)
+```
+
+
+
+
